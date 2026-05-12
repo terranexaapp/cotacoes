@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 """
-Nordeste Agro — Coletor Automático de Cotações v1.5.7 enxuto
+Nordeste Agro — Coletor Automático de Cotações v1.5.8 enxuto
 
 Objetivo:
 - Manter o mesmo nome do arquivo principal do projeto:
@@ -51,7 +51,7 @@ from bs4 import BeautifulSoup
 # Configuração geral
 # =============================================================================
 
-VERSAO = "1.5.7"
+VERSAO = "1.5.8"
 PROJETO = "Nordeste Agro"
 MODULO = "cotacoes"
 TZ = ZoneInfo("America/Fortaleza")
@@ -349,7 +349,7 @@ def periodo_semanal_padrao(data_inicio_iso: Optional[str], data_fim_iso: Optiona
     Padroniza a data exibida no site como:
     DD/MM/AAAA a DD/MM/AAAA
 
-    Regra v1.5.7:
+    Regra v1.5.8:
     - Se a fonte trouxer data inicial e final diferentes, usa as duas.
     - Se a fonte trouxer só uma data, ou se inicial e final vierem iguais,
       trata essa data como início da semana e soma +4 dias.
@@ -944,7 +944,7 @@ def coletar_siagro(status_fontes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "total_registros": len(itens),
             "produtos_monitorados": ["Sorgo Granífero", "Arroz", "Feijão", "Boi Gordo", "Leite"],
             "observacao": (
-                "v1.5.7 enxuta: usa RankingPrecoMedioUF por POST. "
+                "v1.5.8 enxuta: usa RankingPrecoMedioUF por POST. "
                 "Grãos em Saca 60 kg, Boi em @, Leite em litro."
             ),
         }
@@ -976,7 +976,7 @@ def converter_preco_historico_semanal(produto_base: str, preco_kg: float) -> Opt
 
 def coletar_historico_conab_semanal_para_360_e_sorgo(status_fontes: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict[str, Any]]]:
     """
-    v1.5.7:
+    v1.5.8:
     Mantém CONAB Produtos 360º como fonte principal para Soja, Milho e Algodão,
     e SIAGRO como fonte principal para Sorgo, mas usa a CONAB Preços
     Agropecuários Semanal UF para montar histórico de 30 dias quando houver
@@ -1082,7 +1082,7 @@ def coletar_historico_conab_semanal_para_360_e_sorgo(status_fontes: list[dict[st
                 "total_registros": total_pontos,
                 "produtos_historico": ["Soja", "Milho", "Algodão", "Sorgo"],
                 "observacao": (
-                    "v1.5.7: usado somente para histórico de 30 dias e variação de Soja, Milho e Algodão. "
+                    "v1.5.8: usado somente para histórico de 30 dias e variação de Soja, Milho e Algodão. "
                     "O preço atual continua vindo do CONAB Produtos 360º."
                 ),
             }
@@ -1242,7 +1242,7 @@ def chave_historico_tuple(chave: str) -> tuple[str, str, str, str]:
 
 def carregar_historico_aiba_persistente() -> dict[tuple[str, str, str, str], list[dict[str, Any]]]:
     """
-    v1.5.7:
+    v1.5.8:
     Histórico persistente da AIBA em arquivo próprio:
     cotacoes/logs/historico_aiba.json
 
@@ -1387,7 +1387,7 @@ def aplicar_historico_acumulado_aiba_e_sorgo(
     historicos_anteriores: dict[tuple[str, str, str, str], list[dict[str, Any]]],
 ) -> None:
     """
-    v1.5.7:
+    v1.5.8:
     AIBA/regional passa a acumular histórico próprio a cada execução.
     Sorgo também reaproveita histórico anterior se a CONAB Semanal UF não
     trouxer pontos suficientes para cálculo de variação.
@@ -1740,7 +1740,7 @@ def carregar_regionais_anteriores() -> list[dict[str, Any]]:
                 "Registro regional preservado do JSON anterior. "
                 "Será substituído automaticamente quando houver nova cotação válida da fonte regional."
             )
-            saida.append(item)
+            saida.append(normalizar_item_para_tabela(item))
     return saida
 
 
@@ -1802,7 +1802,7 @@ def score_preferencia_aiba(item: dict[str, Any]) -> tuple[int, int, float]:
 
 def deduplicar_aiba_regionais(itens_tabela: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    v1.5.7:
+    v1.5.8:
     Remove duplicidade visual da AIBA/regional na tabela principal.
 
     Exemplo corrigido:
@@ -1915,9 +1915,116 @@ def deduplicar_aiba_regionais(itens_tabela: list[dict[str, Any]]) -> list[dict[s
 # Filtro, consolidação e saída
 # =============================================================================
 
+def normalizar_item_para_tabela(item: dict[str, Any]) -> dict[str, Any]:
+    """
+    Normaliza itens antes da validação/consolidação.
+
+    Correção v1.5.8:
+    - alguns registros preservados do JSON regional anterior entram no formato do HTML,
+      com `preco` já formatado como "R$ 136,25/Arroba (@)" e o número puro em `valor`;
+    - a validação antiga tentava usar float(preco) diretamente e quebrava o workflow;
+    - esta função converte qualquer preço externo para número antes de validar e salvar.
+    """
+    item = dict(item)
+
+    produto_base = normalizar_produto_base(
+        item.get("produto_base")
+        or item.get("produto")
+        or item.get("produto_original")
+    )
+    if produto_base:
+        item["produto_base"] = produto_base
+
+    nivel = limpar_texto(item.get("nivel_comercializacao")) or "Produtor"
+    if not item.get("produto"):
+        item["produto"] = nome_produto(produto_base, nivel) if produto_base in PRODUTOS_SIAGRO else produto_base
+
+    if not item.get("produto_original"):
+        item["produto_original"] = produto_base
+
+    # JSON compatível com HTML usa: estado=UF, cidade=praça, regiao=estado por extenso.
+    uf = limpar_texto(item.get("uf") or item.get("estado")).upper()
+    if uf in UFS_BRASIL:
+        item["uf"] = uf
+        regiao = limpar_texto(item.get("regiao"))
+        item["estado"] = regiao if regiao and regiao.upper() not in UFS_BRASIL else UFS_BRASIL.get(uf, uf)
+
+    if not item.get("praca") and item.get("cidade"):
+        item["praca"] = limpar_texto(item.get("cidade"))
+
+    if not item.get("unidade"):
+        item["unidade"] = limpar_texto(item.get("unidade_original")) or "Unidade"
+    if not item.get("unidade_original"):
+        item["unidade_original"] = limpar_texto(item.get("unidade")) or "Unidade"
+
+    preco_num = parse_preco(item.get("valor"))
+    if preco_num is None:
+        preco_num = parse_preco(item.get("preco"))
+    if preco_num is None:
+        preco_num = parse_preco(item.get("preco_formatado"))
+
+    if preco_num is not None:
+        item["preco"] = round(preco_num, 2)
+        if item.get("preco_original") is None:
+            item["preco_original"] = round(preco_num, 6)
+        if not item.get("preco_formatado"):
+            item["preco_formatado"] = formatar_preco(preco_num, item.get("unidade") or "")
+
+    data_ref = (
+        limpar_texto(item.get("data_referencia"))
+        or limpar_texto(item.get("data_iso"))
+        or limpar_texto(item.get("data_fim_iso"))
+        or limpar_texto(item.get("data_inicio_iso"))
+        or (parse_data_qualquer(item.get("data")) or "")
+    )
+    if not data_ref:
+        data_ref = agora_local().date().isoformat()
+
+    data_ref = parse_data_qualquer(data_ref) or data_ref[:10]
+    item["data_referencia"] = data_ref
+    item["data_referencia_inicio"] = item.get("data_referencia_inicio") or item.get("data_inicio_iso") or data_ref
+    item["data_referencia_fim"] = item.get("data_referencia_fim") or item.get("data_fim_iso") or data_ref
+    item["periodo_referencia"] = item.get("periodo_referencia") or item.get("data") or data_para_br(data_ref)
+
+    if not item.get("tipo"):
+        fonte = limpar_texto(item.get("fonte")).upper()
+        item["tipo"] = "regional" if "AIBA" in fonte or "SEAGRI" in fonte else "oficial"
+
+    if not item.get("nivel_comercializacao"):
+        item["nivel_comercializacao"] = nivel
+    if not item.get("nivel_comercializacao_chave"):
+        item["nivel_comercializacao_chave"] = "preco_produtor" if "produtor" in remover_acentos(nivel).lower() else slugify(nivel)
+    if item.get("prioridade_nivel_preco") is None:
+        item["prioridade_nivel_preco"] = 1 if item.get("nivel_comercializacao_chave") == "preco_produtor" else 5
+    if not item.get("categoria"):
+        item["categoria"] = categoria_produto(produto_base)
+    if not item.get("produto_slug"):
+        item["produto_slug"] = slugify(f"{produto_base}-{item.get('nivel_comercializacao')}")
+    if not item.get("tipo_produto"):
+        item["tipo_produto"] = "principal"
+    if not item.get("moeda"):
+        item["moeda"] = "BRL"
+    if item.get("fator_conversao") is None:
+        item["fator_conversao"] = 1
+    if item.get("conversao_aplicada") is None:
+        item["conversao_aplicada"] = False
+    if not isinstance(item.get("historico_30_dias"), list):
+        item["historico_30_dias"] = []
+
+    return item
+
+
 def preco_valido(item: dict[str, Any]) -> bool:
-    produto = item.get("produto_base")
-    preco = item.get("preco")
+    produto = normalizar_produto_base(
+        item.get("produto_base")
+        or item.get("produto")
+        or item.get("produto_original")
+    )
+    preco = parse_preco(item.get("preco"))
+    if preco is None:
+        preco = parse_preco(item.get("valor"))
+    if preco is None:
+        preco = parse_preco(item.get("preco_formatado"))
     if preco is None:
         return False
 
@@ -1932,7 +2039,7 @@ def preco_valido(item: dict[str, Any]) -> bool:
         "Leite": (0.5, 10),
     }
     minimo, maximo = faixas.get(produto, (0.01, 999999))
-    return minimo <= float(preco) <= maximo
+    return minimo <= preco <= maximo
 
 
 def dentro_janela(item: dict[str, Any], data_corte_iso: str) -> bool:
@@ -1958,6 +2065,8 @@ def consolidar(itens: list[dict[str, Any]], data_corte_iso: str) -> tuple[list[d
     descartados_data = 0
 
     for item in itens:
+        item = normalizar_item_para_tabela(item)
+
         if not preco_valido(item):
             descartados_validacao += 1
             continue
@@ -2167,7 +2276,7 @@ def main() -> None:
                 "regra": (
                     "SIAGRO é principal para Sorgo, Arroz, Feijão, Boi Gordo e Leite. "
                     "CONAB Semanal é fallback quando SIAGRO não retorna dado válido. "
-                    "v1.5.7: AIBA acumula histórico próprio persistente e Sorgo recebe variação por histórico semanal/acumulado."
+                    "v1.5.8: AIBA acumula histórico próprio persistente e Sorgo recebe variação por histórico semanal/acumulado."
                 ),
                 "produtos_siagro_ok": sorted(produtos_siagro_ok),
                 "produtos_fallback": sorted(produtos_fallback),
